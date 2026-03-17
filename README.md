@@ -18,7 +18,14 @@ Enforces correct request construction **at compile time** via a stepped builder,
 - [Builder API](#builder-api)
 - [HttpCalloutResult](#httpcalloutresult)
 - [Middleware](#middleware)
+  - [How middleware works](#how-middleware-works)
+  - [BearerTokenMiddleware](#beartokenmiddleware)
+  - [ApiKeyMiddleware](#apikeymiddleware)
+  - [LoggingMiddleware](#loggingmiddleware)
+  - [RetryMiddleware](#retrymiddleware)
+  - [CircuitBreakerMiddleware](#circuitbreakermiddleware)
 - [Response handlers](#response-handlers)
+  - [JsonResponseHandler](#jsonresponsehandler)
 - [Custom middleware](#custom-middleware-example)
 - [Custom logger](#custom-logger-example)
 - [Full pipeline example](#full-pipeline-example)
@@ -88,7 +95,7 @@ if (result.isSuccess()) {
 ```
 
 ```apex
-// POST with JSON body (shortcut — body + Content-Type set automatically)
+// POST with JSON body — shortcut form (body + Content-Type set in one step)
 HttpCalloutResult result = HttpCallout.builder()
     .endpoint('https://api.example.com/orders')
     .post(new Map<String, Object>{ 'ref' => 'ORD-001', 'amount' => 99 })
@@ -100,8 +107,8 @@ HttpCalloutResult result = HttpCallout.builder()
 // POST two-step form — compile-time enforced body
 HttpCalloutResult result = HttpCallout.builder()
     .endpoint('https://api.example.com/orders')
-    .post()                                          // → IBodyRequiredStep (no build() yet)
-    .bodyJson(new Map<String, Object>{ 'ref' => 'ORD-001' })  // → IBuildStep
+    .post()                                                          // → IBodyRequiredStep (no build() yet)
+    .bodyJson(new Map<String, Object>{ 'ref' => 'ORD-001' })        // → IBuildStep
     .timeout(15000)
     .build()
     .execute();
@@ -124,11 +131,13 @@ The return type of each HTTP verb controls what methods are available next. Wron
 
 ```apex
 // Compile error — POST without body
-HttpCallout.builder().endpoint('/api').post().build(); // build() not on IBodyRequiredStep
+HttpCallout.builder().endpoint('/api').post().build(); // build() does not exist on IBodyRequiredStep
 
 // Compile error — GET with body
-HttpCallout.builder().endpoint('/api').get().bodyJson(data); // bodyJson() not on IBuildStep
+HttpCallout.builder().endpoint('/api').get().bodyJson(data); // bodyJson() does not exist on IBuildStep
 ```
+
+This is enforced by the **Stepped Builder** pattern: each method returns a different interface type, so the Apex compiler itself rejects invalid combinations before your code ever runs.
 
 ---
 
@@ -139,55 +148,67 @@ HttpCallout.builder()
     .endpoint(String url)           // required — full URL or callout:NamedCredential/path
 
     // HTTP verbs
-    .get()
-    .head()
-    .delete_x()
-    .post()                         // body required separately → IBodyRequiredStep
-    .put()
-    .patch()
+    .get()                          // → IBuildStep
+    .head()                         // → IBuildStep
+    .delete_x()                     // → IOptionalBodyStep (body optional)
+    .post()                         // → IBodyRequiredStep (body required before build)
+    .put()                          // → IBodyRequiredStep
+    .patch()                        // → IBodyRequiredStep
     .post(Object jsonBody)          // shortcut: serializes body + sets Content-Type → IBuildStep
     .put(Object jsonBody)
     .patch(Object jsonBody)
 
-    // Body (on IBodyRequiredStep / IOptionalBodyStep)
-    .body(String rawBody)
-    .bodyJson(Object obj)           // JSON.serialize + sets Content-Type → IBuildStep
+    // Body (available on IBodyRequiredStep and IOptionalBodyStep)
+    .body(String rawBody)           // raw string body
+    .bodyJson(Object obj)           // JSON.serialize(obj) + sets Content-Type: application/json
 
-    // Options (on IBuildStep)
+    // Options (available on IBuildStep)
     .timeout(Integer ms)            // default: 30 000 ms
-    .header(String key, String val)
-    .contentTypeJson()
-    .use(IHttpMiddleware middleware) // attach middleware in order
+    .header(String key, String val) // add a custom request header
+    .contentTypeJson()              // shortcut to set Content-Type: application/json
+    .use(IHttpMiddleware middleware) // attach middleware — executed in registration order
     .handleResponseWith(IResponseHandler handler)
 
-    .build()                        // returns HttpCallout instance
-    .execute()                      // sends the request, returns HttpCalloutResult
+    .build()                        // returns a configured HttpCallout instance
+    .execute()                      // fires the HTTP request, returns HttpCalloutResult
 ```
 
 ---
 
 ## HttpCalloutResult
 
+`HttpCalloutResult` is an immutable wrapper around the HTTP response. It is always returned by `execute()`, regardless of the status code — no exceptions are thrown for 4xx or 5xx responses.
+
 ```apex
-result.statusCode       // Integer — HTTP status code
+result.statusCode       // Integer — HTTP status code (e.g. 200, 404, 500)
 result.body             // String  — raw response body
-result.data             // Object  — populated by IResponseHandler (null if none)
-result.parseError       // String  — set if deserialization failed, null otherwise
-result.errorCode        // String  — from response handler
-result.errorMessage     // String  — from response handler
+result.data             // Object  — populated by IResponseHandler (null if none registered)
+result.parseError       // String  — set if JSON deserialization failed, null otherwise
+result.errorCode        // String  — application-level error code from a response handler
+result.errorMessage     // String  — application-level error message from a response handler
 
 result.isSuccess()      // true for 2xx
 result.isClientError()  // true for 4xx
 result.isServerError()  // true for 5xx
-
-result.getDataAs(MyClass.class)  // safely cast data to a typed Apex class
 ```
+
+### `getDataAs(Type)`
+
+Safely casts the deserialized `data` to a typed Apex class:
+
+```apex
+OrderResponse order = (OrderResponse) result.getDataAs(OrderResponse.class);
+```
+
+> **Why not a generic method?** Apex does not support generic methods (`getDataAs<T>()`). `getDataAs(Type)` works around this by round-tripping through `JSON.serialize` / `JSON.deserialize`, which safely coerces any `Object` to the target type — including complex nested classes.
 
 ---
 
 ## Middleware
 
-Middleware implements `IHttpMiddleware` and is executed in the order it is registered with `.use()`.
+### How middleware works
+
+Middleware implements `IHttpMiddleware` and wraps the HTTP call. Each middleware receives the request, can inspect or modify it, then calls `next.handle()` to pass control to the next middleware in the chain. The last middleware in the chain calls the actual HTTP endpoint.
 
 ```apex
 public interface IHttpMiddleware {
@@ -195,64 +216,153 @@ public interface IHttpMiddleware {
 }
 ```
 
+Middleware is executed in **registration order** — the first `.use()` call is the outermost wrapper:
+
+```
+request ──► CircuitBreaker ──► BearerToken ──► Retry ──► Logging ──► HTTP call
+response ◄── CircuitBreaker ◄── BearerToken ◄── Retry ◄── Logging ◄── HTTP call
+```
+
+This means:
+- **CircuitBreaker** should be first — it needs to see every failure including retries
+- **Logging** should be last — it logs the actual individual callout, not the retry group
+- **Auth** (Bearer, ApiKey) should be before Retry so the token is re-attached on each attempt
+
+---
+
 ### `BearerTokenMiddleware`
 
-Adds an `Authorization: Bearer <token>` header (RFC 6750).
+Adds an `Authorization: Bearer <token>` header on every request (RFC 6750). Used for OAuth 2.0 and JWT-authenticated APIs.
 
 ```apex
 .use(new BearerTokenMiddleware('eyJhbGci...'))
 ```
 
+```apex
+// Fetch token dynamically (e.g. from a Custom Setting or Named Credential)
+String token = MyTokenService.getAccessToken();
+.use(new BearerTokenMiddleware(token))
+```
+
+> Throws `HttpCalloutException` at construction time if the token is blank — fails fast before any HTTP call is made.
+
+---
+
 ### `ApiKeyMiddleware`
 
-Adds an API key as a header or query parameter.
+Adds an API key to the request either as a **header** or a **query parameter**.
 
 ```apex
-.use(new ApiKeyMiddleware('my-secret-key'))                      // x-api-key header (default)
-.use(new ApiKeyMiddleware('my-secret-key', 'X-Api-Key'))         // custom header name
-.use(ApiKeyMiddleware.asQueryParam('my-secret-key', 'api_key'))  // query param
+.use(new ApiKeyMiddleware('my-secret-key'))                      // header: x-api-key (default)
+.use(new ApiKeyMiddleware('my-secret-key', 'X-Api-Key'))         // header: custom name
+.use(ApiKeyMiddleware.asQueryParam('my-secret-key', 'api_key'))  // ?api_key=my-secret-key
 ```
+
+When using query param mode, the key and value are **URL-encoded** automatically. If the endpoint already contains a `?`, an `&` separator is used instead.
+
+> Throws `HttpCalloutException` at construction time if the key or header/param name is blank.
+
+---
 
 ### `LoggingMiddleware`
 
-Logs request and response using `IHttpLogger`. Uses `SystemDebugLogger` (`System.debug`) by default.
+Logs each HTTP request and response, including method, endpoint, status code, and duration. Uses `IHttpLogger` for output — defaults to `SystemDebugLogger` which wraps `System.debug`.
 
 ```apex
-.use(new LoggingMiddleware())                   // default System.debug logger
-.use(new LoggingMiddleware(myCustomLogger))     // inject custom IHttpLogger
+.use(new LoggingMiddleware())                   // default System.debug output
+.use(new LoggingMiddleware(myCustomLogger))     // inject Nebula Logger or any IHttpLogger
 ```
+
+**What gets logged:**
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| Request sent | `INFO` | `requestId`, `method`, `endpoint`, `hasBody` |
+| Response received | `INFO` | `requestId`, `statusCode`, `durationMs` |
+| Exception thrown | `ERROR` | `requestId`, `error`, `durationMs` |
+
+Each request gets a unique `requestId` (`REQ-<timestamp>`) so you can correlate the request and response log lines.
+
+---
 
 ### `RetryMiddleware`
 
-Retries on network errors and configurable HTTP status codes with exponential backoff.
-
-Default retryable codes: `408, 429, 500, 502, 503, 504`
+Automatically retries failed requests with exponential backoff.
 
 ```apex
-.use(new RetryMiddleware(3))                                     // 3 retries, default codes
-.use(new RetryMiddleware(2, new Set<Integer>{ 503, 504 }))       // custom codes
+.use(new RetryMiddleware(3))                                     // up to 3 retries, default codes
+.use(new RetryMiddleware(2, new Set<Integer>{ 503, 504 }))       // custom retryable codes
 ```
 
-> **Apex limitation:** True async sleep is not available in synchronous Apex. Backoff is simulated with a CPU busy-wait capped at ~500ms to respect governor limits. For real inter-retry delays, use Queueable Apex with a chained job.
+**Default retryable status codes:** `408, 429, 500, 502, 503, 504`
+
+**Retry count** is the number of *additional* attempts after the first call — `new RetryMiddleware(3)` means up to **4 total attempts**.
+
+**Backoff schedule:**
+
+| Attempt | Target delay |
+|---------|-------------|
+| After attempt 0 | ~100ms |
+| After attempt 1 | ~200ms |
+| After attempt 2 | ~400ms |
+| After attempt 3+ | ~500ms (cap) |
+
+**What triggers a retry:**
+- `CalloutException` (network timeout, unreachable host)
+- Any retryable HTTP status code (configurable)
+
+**What does NOT trigger a retry:**
+- `4xx` responses — those indicate a client-side error, retrying won't help
+
+> **Apex limitation:** True async sleep is not available in synchronous Apex. Backoff is simulated with a CPU busy-wait capped at ~500ms to respect governor limits. For real delays between retries (e.g. waiting 30 seconds), use **Queueable Apex** with a chained job.
+
+---
 
 ### `CircuitBreakerMiddleware`
 
-Prevents cascading failures with the classic CLOSED → OPEN → HALF_OPEN state machine.
-
-Trips to OPEN after `failureThreshold` consecutive 5xx responses or `CalloutException`s. After `recoveryTimeoutSeconds`, one probe request is allowed through (HALF_OPEN). Success resets to CLOSED; failure re-opens.
+Protects your org from hammering a failing external API. Instead of making every callout and waiting for each one to timeout, it **fails fast** after a failure threshold is reached, then probes for recovery automatically.
 
 ```apex
 .use(new CircuitBreakerMiddleware('PaymentAPI'))           // 5 failures, 60s recovery (defaults)
-.use(new CircuitBreakerMiddleware('PaymentAPI', 3, 30))    // custom thresholds
+.use(new CircuitBreakerMiddleware('PaymentAPI', 3, 30))    // 3 failures, 30s recovery
 ```
 
-> **State scope:** Circuit state is stored in a static `Map`, scoped to the current Apex transaction. It does not persist across transactions. For persistent state across transactions, back it with Platform Cache or a Custom Object.
+**The three states:**
+
+```
+          failures >= threshold           recovery timeout elapsed
+CLOSED ──────────────────────────► OPEN ─────────────────────────► HALF_OPEN
+  ▲                                                                      │
+  │  success                              failure                        │
+  └──────────────────────────────────────────────────────────────────────┘
+```
+
+| State | Behaviour |
+|-------|-----------|
+| **CLOSED** | Normal operation. Every request goes through. Failures are counted. |
+| **OPEN** | All requests fail immediately with `HttpCalloutException` — no callout is made. |
+| **HALF_OPEN** | One probe request is allowed through to test if the service has recovered. Success → CLOSED. Failure → OPEN. |
+
+**What trips the circuit (counts as a failure):**
+- Any `5xx` HTTP response
+- Any `CalloutException` (network error, timeout)
+
+**What does NOT trip the circuit:**
+- `4xx` responses — those are client-side errors, the downstream service is healthy
+
+**Multiple services** are tracked independently by `serviceName`:
+```apex
+.use(new CircuitBreakerMiddleware('PaymentAPI'))
+.use(new CircuitBreakerMiddleware('ShippingAPI'))  // separate counter and state
+```
+
+> **State scope:** Circuit state is stored in a static `Map` scoped to the current Apex transaction. It does **not** persist between separate transactions, batch job rows, or async contexts. For persistent circuit state across transactions, back it with **Platform Cache** or a **Custom Object**.
 
 ---
 
 ## Response handlers
 
-Response handlers implement `IResponseHandler` and are registered with `.handleResponseWith()`.
+Response handlers implement `IResponseHandler` and are registered with `.handleResponseWith()`. They replace the default `HttpCalloutResult` construction logic, letting you control how the response is parsed.
 
 ```apex
 public interface IResponseHandler {
@@ -260,9 +370,11 @@ public interface IResponseHandler {
 }
 ```
 
+---
+
 ### `JsonResponseHandler`
 
-Deserializes the response body into a typed Apex class. Only runs on 2xx responses.
+Deserializes the response body into a typed Apex class. Only runs deserialization on `2xx` responses with a non-blank body.
 
 ```apex
 HttpCalloutResult result = HttpCallout.builder()
@@ -272,10 +384,20 @@ HttpCalloutResult result = HttpCallout.builder()
     .build()
     .execute();
 
-Product p = (Product) result.getDataAs(Product.class);
+if (result.isSuccess()) {
+    Product p = (Product) result.getDataAs(Product.class);
+}
 ```
 
-If deserialization fails, `result.parseError` is set and `result.isSuccess()` remains `true` — the HTTP call itself succeeded.
+**Error handling behaviour:**
+
+| Scenario | `result.isSuccess()` | `result.data` | `result.parseError` |
+|----------|---------------------|---------------|---------------------|
+| 2xx + valid JSON | `true` | populated | `null` |
+| 2xx + invalid JSON | `true` | `null` | error message |
+| 4xx / 5xx | `false` | `null` | `null` |
+
+The HTTP call result and the parse result are kept separate — a JSON parse failure does not change `isSuccess()`, because the HTTP call itself succeeded.
 
 ---
 
@@ -302,6 +424,8 @@ HttpCallout.builder()
 
 ## Custom logger example
 
+Implement `IHttpLogger` to integrate with any logging framework (e.g. [Nebula Logger](https://github.com/jongpie/NebulaLogger)):
+
 ```apex
 public class MyLogger implements IHttpLogger {
     public void debug(String msg, Map<String, Object> ctx) { /* your impl */ }
@@ -323,16 +447,18 @@ HttpCalloutResult result = HttpCallout.builder()
     .post()
     .bodyJson(new Map<String, Object>{ 'ref' => 'ORD-001' })
     .timeout(20000)
-    .use(new CircuitBreakerMiddleware('OrderAPI', 3, 30))
-    .use(new BearerTokenMiddleware(accessToken))
-    .use(new RetryMiddleware(3))
-    .use(new LoggingMiddleware())
+    .use(new CircuitBreakerMiddleware('OrderAPI', 3, 30))   // outermost — sees all failures
+    .use(new BearerTokenMiddleware(accessToken))            // auth injected before each attempt
+    .use(new RetryMiddleware(3))                            // retries 5xx and network errors
+    .use(new LoggingMiddleware())                           // innermost — logs each individual call
     .handleResponseWith(new JsonResponseHandler(OrderResponse.class))
     .build()
     .execute();
 
 if (result.isSuccess()) {
     OrderResponse order = (OrderResponse) result.getDataAs(OrderResponse.class);
+} else if (result.isServerError()) {
+    System.debug('Server error: ' + result.statusCode);
 }
 ```
 
@@ -350,17 +476,18 @@ HttpCalloutResult result = HttpCallout.builder()
     .execute();
 ```
 
-**Benefits:** no Remote Site Setting needed, authentication (Basic, OAuth 2.0, JWT) handled by Salesforce.
+**Benefits of Named Credentials:**
+- No Remote Site Setting required
+- Authentication (Basic, OAuth 2.0, JWT Bearer) handled by Salesforce — credentials never in code
+- Works with per-user and org-wide authentication modes
 
-> If your Named Credential already handles authentication, do not also attach `BearerTokenMiddleware` or `ApiKeyMiddleware` — they would conflict.
+> If your Named Credential already handles authentication, do **not** also attach `BearerTokenMiddleware` or `ApiKeyMiddleware` — they would conflict and overwrite Salesforce's injected auth header.
 
 ---
 
 ## Manual testing
 
-An anonymous Apex script for the Developer Console is provided at `scripts/apex/testHttpCallout.apex`.
-
-It runs 15 tests against [JSONPlaceholder](https://jsonplaceholder.typicode.com) covering all verbs, middleware, and response handling.
+An anonymous Apex script is provided at `scripts/apex/testHttpCallout.apex`. It runs 15 tests against [JSONPlaceholder](https://jsonplaceholder.typicode.com) covering all HTTP verbs, all built-in middleware, response deserialization, and custom middleware.
 
 **Prerequisite — add a Remote Site Setting:**
 > Setup → Remote Site Settings → New
