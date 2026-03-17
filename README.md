@@ -18,6 +18,26 @@ Enforces correct request construction **at compile time** via a stepped builder,
 
 ## Installation
 
+### Option 1 — Unlocked Package (recommended)
+
+Install the latest version with a single command:
+
+```bash
+sf package install \
+  --package 04tWU000000QEfFYAW \
+  --target-org <your-org-alias> \
+  --wait 10
+```
+
+Or use the browser install URL:
+[https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEfFYAW](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEfFYAW)
+
+| Version | Package ID |
+|---------|-----------|
+| v1.0.0 | `04tWU000000QEfFYAW` |
+
+### Option 2 — Manual deploy
+
 Copy the contents of `force-app/main/default/classes/` into your Salesforce project and deploy with the Salesforce CLI:
 
 ```bash

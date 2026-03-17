@@ -2,11 +2,19 @@
   "packageDirectories": [
     {
       "path": "force-app",
-      "default": true
+      "package": "apex-http-callout",
+      "versionName": "v1.0.0",
+      "versionNumber": "1.0.0.NEXT",
+      "default": true,
+      "versionDescription": "Initial release — fluent HTTP callout builder with middleware pipeline for Salesforce Apex"
     }
   ],
   "name": "apex-http-callout",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "66.0"
+  "sourceApiVersion": "66.0",
+  "packageAliases": {
+    "apex-http-callout": "0HoWU0000001v130AA",
+    "apex-http-callout@1.0.0-1": "04tWU000000QEfFYAW"
+  }
 }
