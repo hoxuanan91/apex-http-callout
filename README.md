@@ -333,36 +333,68 @@ Protects your org from hammering a failing external API **across multiple reques
 .use(new CircuitBreakerMiddleware('PaymentAPI', 3, 30))    // 3 failures, 30s recovery
 ```
 
+**The mechanism**
+
+The circuit breaker is completely passive — it has no background thread, no scheduler, no timer. It only runs when your Apex code calls `.execute()`. It stores just 3 fields:
+
+```apex
+private Integer  failureCount     // consecutive failures so far
+private Datetime lastFailureTime  // when the last failure occurred
+private String   status           // 'CLOSED', 'OPEN', or 'HALF_OPEN'
+```
+
+Every `.execute()` call in your transaction is a separate request the circuit breaker evaluates independently. In a single Apex transaction you can make up to 100 callouts (Salesforce governor limit), so a loop calling the same API multiple times will hit the circuit breaker multiple times:
+
+```apex
+for (Order o : orders) {
+    HttpCallout.builder()
+        .endpoint('https://api.example.com/orders/' + o.Id)
+        .get()
+        .use(new CircuitBreakerMiddleware('OrderAPI', 3, 60))
+        .build()
+        .execute();  // each iteration = one request evaluated by the circuit breaker
+}
+```
+
+```
+iteration 1 → .execute() → 500  (failure 1/3)
+iteration 2 → .execute() → 500  (failure 2/3)
+iteration 3 → .execute() → 500  (failure 3/3 → OPEN)
+iteration 4 → .execute() → throws immediately, no callout made
+iteration 5 → .execute() → throws immediately, no callout made
+```
+
 **The three states:**
 
 ```
-          failures >= threshold           recovery timeout elapsed
-CLOSED ──────────────────────────► OPEN ─────────────────────────► HALF_OPEN
-  ▲                                                                      │
-  │  success                              failure                        │
-  └──────────────────────────────────────────────────────────────────────┘
+          failures >= threshold           next .execute() arrives
+CLOSED ──────────────────────────► OPEN  AND recovery timeout elapsed ──► HALF_OPEN
+  ▲                                                                              │
+  │  success                                    failure                          │
+  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | State | Behaviour |
 |-------|-----------|
-| **CLOSED** | Normal operation. Every request goes through. Failures are counted. |
-| **OPEN** | All requests fail immediately with `HttpCalloutException` — no callout is made. |
-| **HALF_OPEN** | One probe request is allowed through to test if the service has recovered. Success → CLOSED. Failure → OPEN. |
+| **CLOSED** | Normal operation. Every `.execute()` goes through. Failures are counted. |
+| **OPEN** | Every `.execute()` throws immediately — no callout is made. |
+| **HALF_OPEN** | The next `.execute()` after the recovery timeout is allowed through as a probe. Success → CLOSED. Failure → OPEN. |
 
-**How HALF_OPEN works technically:**
+**How HALF_OPEN works:**
 
-There is no separate health check ping. When a request arrives after the recovery timeout, that request *becomes* the probe — it falls through to the normal callout path. If it succeeds, the circuit resets to CLOSED. If it fails, the circuit goes back to OPEN immediately (the failure count was already at threshold).
+There is no timer, no ping, no automatic retry. HALF_OPEN is triggered by the next `.execute()` call your code makes after `recoveryTimeoutSeconds` has elapsed. The circuit breaker does not create a new request — it simply allows *your* request to pass through unchanged (same endpoint, same body, same headers). If the service has recovered, it succeeds and the circuit resets. If not, it fails and the circuit reopens.
 
 ```
-request arrives → circuit is OPEN → recovery timeout elapsed?
-                                          │
-                                     YES → status = HALF_OPEN → callout made
-                                                                      │
-                                                              2xx/3xx/4xx → CLOSED
-                                                              5xx / error → OPEN
+.execute() arrives → circuit OPEN → has recoveryTimeout elapsed?
+                                            │
+                                    NO  → throws immediately
+                                    YES → status = HALF_OPEN → your callout is made
+                                                                       │
+                                                               success → CLOSED
+                                                               failure → OPEN (clock resets)
 ```
 
-> Note: the first real user request after the timeout is the probe — that user may still receive a slow or failed response during HALF_OPEN.
+> The probe is always the next real request your code makes — that caller may still receive a failed or slow response during HALF_OPEN.
 
 **`failureThreshold` is NOT the same as retry count.** It counts consecutive *separate requests* that failed, not attempts within one request:
 
