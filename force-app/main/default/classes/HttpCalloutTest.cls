@@ -179,20 +179,27 @@ private class HttpCalloutTest {
 
     @IsTest
     static void execute_withResponseHandler_appliesHandler() {
-        Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{"id":"42"}'));
+        Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{"id":"42","name":"Test"}'));
 
         Test.startTest();
         HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
-            .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
+            .handleResponseWith(new JsonResponseHandler(TestPost.class))
             .build()
             .execute();
         Test.stopTest();
 
         System.assert(result.isSuccess());
-        Map<String, Object> data = (Map<String, Object>) result.getDataAs(Map<String, Object>.class);
-        System.assertEquals('42', data.get('id'));
+        TestPost post = (TestPost) result.getDataAs(TestPost.class);
+        System.assertEquals('42', post.id);
+        System.assertEquals('Test', post.name);
+    }
+
+    // Simple DTO used by response handler tests
+    private class TestPost {
+        public String id;
+        public String name;
     }
 
     // =========================================================================

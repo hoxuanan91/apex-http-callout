@@ -1,15 +1,21 @@
 @IsTest
 private class JsonResponseHandlerTest {
 
+    // DTO used across all tests — avoids Map<String,Object>.class which is unsupported by JSON.deserialize
+    private class PostDto {
+        public String name;
+        public Integer value;
+    }
+
     @IsTest
     static void successResponse_deserializesBody() {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{"name":"Test","value":42}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
-            .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
+            .handleResponseWith(new JsonResponseHandler(PostDto.class))
             .build()
             .execute();
         Test.stopTest();
@@ -17,9 +23,9 @@ private class JsonResponseHandlerTest {
         System.assert(result.isSuccess());
         System.assertEquals(null, result.parseError);
 
-        Map<String, Object> data = (Map<String, Object>) result.getDataAs(Map<String, Object>.class);
-        System.assertEquals('Test', data.get('name'));
-        System.assertEquals(42, (Integer) data.get('value'));
+        PostDto post = (PostDto) result.getDataAs(PostDto.class);
+        System.assertEquals('Test', post.name);
+        System.assertEquals(42, post.value);
     }
 
     @IsTest
@@ -27,10 +33,10 @@ private class JsonResponseHandlerTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(404, '{"error":"Not found"}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
-            .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
+            .handleResponseWith(new JsonResponseHandler(PostDto.class))
             .build()
             .execute();
         Test.stopTest();
@@ -44,10 +50,10 @@ private class JsonResponseHandlerTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withBody(200, 'not-valid-json'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
-            .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
+            .handleResponseWith(new JsonResponseHandler(PostDto.class))
             .build()
             .execute();
         Test.stopTest();
@@ -61,10 +67,10 @@ private class JsonResponseHandlerTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(204));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
-            .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
+            .handleResponseWith(new JsonResponseHandler(PostDto.class))
             .build()
             .execute();
         Test.stopTest();

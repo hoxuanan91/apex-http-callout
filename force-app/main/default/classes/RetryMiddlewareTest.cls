@@ -13,7 +13,7 @@ private class RetryMiddlewareTest {
         ));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new RetryMiddleware(3))
@@ -29,7 +29,7 @@ private class RetryMiddlewareTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(503));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new RetryMiddleware(2))
@@ -51,7 +51,7 @@ private class RetryMiddlewareTest {
         Test.setMock(HttpCalloutMock.class, mock);
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new RetryMiddleware(3))
@@ -65,13 +65,11 @@ private class RetryMiddlewareTest {
 
     @IsTest
     static void retries_onCalloutException_thenSucceeds() {
-        // CalloutException is handled: the mock in a sequence can't throw then succeed
-        // so we test that CalloutException propagates when all retries are exhausted
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withCalloutException('Connection timeout'));
 
         Test.startTest();
         try {
-            new HttpCallout.Builder()
+            HttpCallout.builder()
                 .endpoint('https://example.com/api')
                 .get()
                 .use(new RetryMiddleware(2))
@@ -86,7 +84,6 @@ private class RetryMiddlewareTest {
 
     @IsTest
     static void customRetryableCodes_areRespected() {
-        // 404 is not in the default set, but we add it
         HttpCalloutMockFactory.SequenceMock mock = HttpCalloutMockFactory.sequence(
             new List<HttpCalloutMockFactory.StaticMock>{
                 HttpCalloutMockFactory.withStatus(404),
@@ -96,7 +93,7 @@ private class RetryMiddlewareTest {
         Test.setMock(HttpCalloutMock.class, mock);
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new RetryMiddleware(1, new Set<Integer>{ 404 }))

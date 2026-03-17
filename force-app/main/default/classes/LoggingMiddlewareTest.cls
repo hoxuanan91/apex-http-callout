@@ -6,7 +6,7 @@ private class LoggingMiddlewareTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new LoggingMiddleware())
@@ -23,7 +23,7 @@ private class LoggingMiddlewareTest {
         SpyLogger spy = new SpyLogger();
 
         Test.startTest();
-        new HttpCallout.Builder()
+        HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new LoggingMiddleware(spy))
@@ -38,9 +38,8 @@ private class LoggingMiddlewareTest {
     static void nullLogger_fallsBackToSystemDebug() {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(200));
 
-        // Should not throw
         Test.startTest();
-        new HttpCallout.Builder()
+        HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new LoggingMiddleware(null))
@@ -56,7 +55,7 @@ private class LoggingMiddlewareTest {
 
         Test.startTest();
         try {
-            new HttpCallout.Builder()
+            HttpCallout.builder()
                 .endpoint('https://example.com/api')
                 .get()
                 .use(new LoggingMiddleware(spy))
@@ -72,7 +71,6 @@ private class LoggingMiddlewareTest {
         System.assertEquals(1, spy.errorCalls, 'Error should be logged');
     }
 
-    // Simple spy logger for asserting log calls
     private class SpyLogger implements IHttpLogger {
         public Integer debugCalls = 0;
         public Integer infoCalls  = 0;

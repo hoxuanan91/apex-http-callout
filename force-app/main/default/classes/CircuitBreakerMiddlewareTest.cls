@@ -7,7 +7,7 @@ private class CircuitBreakerMiddlewareTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new CircuitBreakerMiddleware('TestService', 5, 60))
@@ -23,17 +23,15 @@ private class CircuitBreakerMiddlewareTest {
         CircuitBreakerMiddleware.resetAll();
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(500));
 
-        // 2-failure threshold for this test
         CircuitBreakerMiddleware cbm = new CircuitBreakerMiddleware('TestService', 2, 60);
 
-        // Manually record failures to trip the breaker
         CircuitBreakerMiddleware.CircuitState state = cbm.getState();
         state.recordFailure(2, 'TestService');
         state.recordFailure(2, 'TestService');
 
         Test.startTest();
         try {
-            new HttpCallout.Builder()
+            HttpCallout.builder()
                 .endpoint('https://example.com/api')
                 .get()
                 .use(cbm)
@@ -49,14 +47,12 @@ private class CircuitBreakerMiddlewareTest {
     @IsTest
     static void closedCircuit_recordsSuccess_andResets() {
         CircuitBreakerMiddleware.resetAll();
-        Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{}'));
 
         CircuitBreakerMiddleware cbm = new CircuitBreakerMiddleware('TestService', 5, 60);
         CircuitBreakerMiddleware.CircuitState state = cbm.getState();
         state.recordFailure(5, 'TestService');
         state.recordFailure(5, 'TestService');
 
-        // recordSuccess should reset count and close circuit
         state.recordSuccess('TestService');
 
         System.assertEquals(0, state.getFailureCount());
