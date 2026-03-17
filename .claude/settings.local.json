@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(code .)",
+      "Bash(code force-app/main/default/classes/HttpCallout.cls force-app/main/default/classes/HttpCalloutResult.cls force-app/main/default/classes/IHttpMiddleware.cls force-app/main/default/classes/RetryMiddleware.cls force-app/main/default/classes/CircuitBreakerMiddleware.cls)",
+      "Bash(cmd /c \"code \"\"c:\\\\Users\\\\anho\\\\Projects\\\\apex-http-callout\\\\force-app\\\\main\\\\default\\\\classes\\\\HttpCallout.cls\"\" \"\"c:\\\\Users\\\\anho\\\\Projects\\\\apex-http-callout\\\\force-app\\\\main\\\\default\\\\classes\\\\HttpCalloutResult.cls\"\" \"\"c:\\\\Users\\\\anho\\\\Projects\\\\apex-http-callout\\\\force-app\\\\main\\\\default\\\\classes\\\\RetryMiddleware.cls\"\" \"\"c:\\\\Users\\\\anho\\\\Projects\\\\apex-http-callout\\\\force-app\\\\main\\\\default\\\\classes\\\\CircuitBreakerMiddleware.cls\"\" \"\"c:\\\\Users\\\\anho\\\\Projects\\\\apex-http-callout\\\\force-app\\\\main\\\\default\\\\classes\\\\ApiKeyMiddleware.cls\"\"\")"
+    ]
+  }
+}
