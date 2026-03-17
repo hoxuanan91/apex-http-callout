@@ -29,6 +29,7 @@ Enforces correct request construction **at compile time** via a stepped builder,
 - [Custom middleware](#custom-middleware-example)
 - [Custom logger](#custom-logger-example)
 - [Full pipeline example](#full-pipeline-example)
+- [Async usage — Queueable and Finalizer](#async-usage--queueable-and-finalizer)
 - [Named Credentials](#named-credentials)
 - [Manual testing](#manual-testing)
 - [File structure](#file-structure)
@@ -538,6 +539,129 @@ if (result.isSuccess()) {
     System.debug('Server error: ' + result.statusCode);
 }
 ```
+
+---
+
+## Async usage — Queueable and Finalizer
+
+The library works in asynchronous Apex contexts. The class implementing `Queueable` must also implement `Database.AllowsCallouts` — this interface is required by Salesforce for any callout made from an async job.
+
+### Queueable — fire and forget
+
+Offloads the callout from the main transaction. The caller does not wait for the HTTP response.
+
+```apex
+public class HttpCalloutJob implements Queueable, Database.AllowsCallouts {
+
+    private final String endpoint;
+    private final Map<String, Object> body;
+
+    public HttpCalloutJob(String endpoint, Map<String, Object> body) {
+        this.endpoint = endpoint;
+        this.body     = body;
+    }
+
+    public void execute(QueueableContext ctx) {
+        HttpCalloutResult result = HttpCallout.builder()
+            .endpoint(endpoint)
+            .post(body)
+            .use(new CircuitBreakerMiddleware('OrderAPI', 3, 60))
+            .use(new RetryMiddleware(2))
+            .use(new LoggingMiddleware())
+            .build()
+            .execute();
+
+        if (!result.isSuccess()) {
+            // handle failure
+        }
+    }
+}
+
+// enqueue from anywhere in your code
+System.enqueueJob(new HttpCalloutJob('https://api.example.com/orders', payload));
+```
+
+**What you gain:**
+- Main transaction does not wait for the callout to complete
+- Separate governor limits from the calling transaction
+- Can chain jobs for real retry delays (not CPU busy-wait)
+
+### Chained Queueable — real retry delay
+
+Replaces `RetryMiddleware`'s CPU busy-wait with actual time between attempts. Each chained job runs in a separate transaction, giving a genuine delay:
+
+```apex
+public class HttpCalloutWithRetryJob implements Queueable, Database.AllowsCallouts {
+
+    private final String  endpoint;
+    private final Integer attemptsLeft;
+
+    public HttpCalloutWithRetryJob(String endpoint, Integer attemptsLeft) {
+        this.endpoint     = endpoint;
+        this.attemptsLeft = attemptsLeft;
+    }
+
+    public void execute(QueueableContext ctx) {
+        HttpCalloutResult result = HttpCallout.builder()
+            .endpoint(endpoint)
+            .get()
+            .build()
+            .execute();
+
+        if (!result.isSuccess() && attemptsLeft > 0) {
+            // enqueue next attempt — runs in a new transaction after Salesforce schedules it
+            System.enqueueJob(new HttpCalloutWithRetryJob(endpoint, attemptsLeft - 1));
+        }
+    }
+}
+
+System.enqueueJob(new HttpCalloutWithRetryJob('https://api.example.com/orders', 3));
+```
+
+### Finalizer — handle job failure
+
+A `Finalizer` runs after the Queueable job completes regardless of outcome — success, unhandled exception, or governor limit breach. Finalizers **cannot make callouts** themselves, but can enqueue a new job:
+
+```apex
+public class HttpCalloutFinalizer implements Finalizer {
+
+    private final String endpoint;
+
+    public HttpCalloutFinalizer(String endpoint) {
+        this.endpoint = endpoint;
+    }
+
+    public void execute(FinalizerContext ctx) {
+        if (ctx.getResult() == ParentJobResult.UNHANDLED_EXCEPTION) {
+            System.debug('Job failed: ' + ctx.getException().getMessage());
+            System.enqueueJob(new HttpCalloutJob(endpoint, null));  // re-enqueue for retry
+        }
+    }
+}
+
+public class HttpCalloutJob implements Queueable, Database.AllowsCallouts {
+    public void execute(QueueableContext ctx) {
+        System.attachFinalizer(new HttpCalloutFinalizer('https://api.example.com/orders'));
+
+        HttpCallout.builder()
+            .endpoint('https://api.example.com/orders')
+            .get()
+            .use(new CircuitBreakerMiddleware('OrderAPI', 3, 60))
+            .build()
+            .execute();
+    }
+}
+```
+
+**Comparison:**
+
+| | Queueable | Chained Queueable | Finalizer |
+|---|---|---|---|
+| Make callouts | Yes | Yes | **No** |
+| Real retry delay | No | Yes | No — but can enqueue |
+| Handles unhandled exceptions | No | No | **Yes** |
+
+> **Circuit breaker in async:** each Queueable job runs in a separate transaction, so circuit breaker state resets between jobs. For persistent state across async jobs, back it with **Platform Cache** or a **Custom Object**.
 
 ---
 
