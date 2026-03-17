@@ -8,7 +8,7 @@ private class HttpCalloutTest {
     @IsTest
     static void build_missingEndpoint_throws() {
         try {
-            new HttpCallout.Builder().get().build();
+            HttpCallout.builder().endpoint('').get().build();
             System.assert(false, 'Expected exception');
         } catch (HttpCallout.HttpCalloutException ex) {
             System.assert(ex.getMessage().contains('Endpoint is required'), ex.getMessage());
@@ -16,49 +16,9 @@ private class HttpCalloutTest {
     }
 
     @IsTest
-    static void build_getWithBody_throws() {
-        try {
-            new HttpCallout.Builder()
-                .endpoint('/api/test')
-                .get()
-                .body('{"foo":"bar"}')
-                .build();
-            System.assert(false, 'Expected exception');
-        } catch (HttpCallout.HttpCalloutException ex) {
-            System.assert(ex.getMessage().contains('does not allow a body'), ex.getMessage());
-        }
-    }
-
-    @IsTest
-    static void build_postWithoutBody_throws() {
-        try {
-            new HttpCallout.Builder()
-                .endpoint('/api/test')
-                .post()
-                .build();
-            System.assert(false, 'Expected exception');
-        } catch (HttpCallout.HttpCalloutException ex) {
-            System.assert(ex.getMessage().contains('requires a body'), ex.getMessage());
-        }
-    }
-
-    @IsTest
-    static void build_unsupportedMethod_throws() {
-        try {
-            new HttpCallout.Builder()
-                .endpoint('/api/test')
-                .method('CONNECT')
-                .build();
-            System.assert(false, 'Expected exception');
-        } catch (HttpCallout.HttpCalloutException ex) {
-            System.assert(ex.getMessage().contains('Unsupported HTTP method'), ex.getMessage());
-        }
-    }
-
-    @IsTest
     static void build_deleteWithBody_succeeds() {
-        // DELETE allows an optional body
-        HttpCallout callout = new HttpCallout.Builder()
+        // DELETE allows an optional body — IOptionalBodyStep extends IBuildStep
+        HttpCallout callout = HttpCallout.builder()
             .endpoint('https://example.com/api/items')
             .delete_x()
             .bodyJson(new List<String>{ 'id1', 'id2' })
@@ -68,7 +28,7 @@ private class HttpCalloutTest {
 
     @IsTest
     static void build_deleteWithoutBody_succeeds() {
-        HttpCallout callout = new HttpCallout.Builder()
+        HttpCallout callout = HttpCallout.builder()
             .endpoint('https://example.com/api/items/1')
             .delete_x()
             .build();
@@ -81,7 +41,7 @@ private class HttpCalloutTest {
 
     @IsTest
     static void build_postWithJsonShortcut_succeeds() {
-        HttpCallout callout = new HttpCallout.Builder()
+        HttpCallout callout = HttpCallout.builder()
             .endpoint('https://example.com/api/items')
             .post(new Map<String, Object>{ 'name' => 'test' })
             .build();
@@ -90,7 +50,7 @@ private class HttpCalloutTest {
 
     @IsTest
     static void build_putWithJsonShortcut_succeeds() {
-        HttpCallout callout = new HttpCallout.Builder()
+        HttpCallout callout = HttpCallout.builder()
             .endpoint('https://example.com/api/items/1')
             .put(new Map<String, Object>{ 'name' => 'updated' })
             .build();
@@ -99,9 +59,19 @@ private class HttpCalloutTest {
 
     @IsTest
     static void build_patchWithJsonShortcut_succeeds() {
-        HttpCallout callout = new HttpCallout.Builder()
+        HttpCallout callout = HttpCallout.builder()
             .endpoint('https://example.com/api/items/1')
             .patch(new Map<String, Object>{ 'status' => 'active' })
+            .build();
+        System.assertNotEquals(null, callout);
+    }
+
+    @IsTest
+    static void build_postWithBodyStep_succeeds() {
+        HttpCallout callout = HttpCallout.builder()
+            .endpoint('https://example.com/api/items')
+            .post()
+            .bodyJson(new Map<String, Object>{ 'name' => 'test' })
             .build();
         System.assertNotEquals(null, callout);
     }
@@ -115,7 +85,7 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{"id":"1"}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/items/1')
             .get()
             .build()
@@ -132,7 +102,7 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(201, '{"created":true}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/items')
             .post(new Map<String, Object>{ 'name' => 'test' })
             .build()
@@ -152,7 +122,7 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(200));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .header('X-Custom-Header', 'myvalue')
@@ -174,7 +144,7 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(200));
 
         Test.startTest();
-        new HttpCallout.Builder()
+        HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .use(new OrderTrackingMiddleware('first', executionOrder))
@@ -192,10 +162,10 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(200));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
-            .use(null) // should not throw
+            .use(null)
             .build()
             .execute();
         Test.stopTest();
@@ -212,7 +182,7 @@ private class HttpCalloutTest {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withJson(200, '{"id":"42"}'));
 
         Test.startTest();
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api/item')
             .get()
             .handleResponseWith(new JsonResponseHandler(Map<String, Object>.class))
@@ -232,7 +202,7 @@ private class HttpCalloutTest {
     @IsTest
     static void result_statusHelpers_workCorrectly() {
         Test.setMock(HttpCalloutMock.class, HttpCalloutMockFactory.withStatus(404));
-        HttpCalloutResult result = new HttpCallout.Builder()
+        HttpCalloutResult result = HttpCallout.builder()
             .endpoint('https://example.com/api')
             .get()
             .build()
@@ -257,7 +227,6 @@ private class HttpCalloutTest {
     // Test helpers
     // =========================================================================
 
-    /** Middleware that records its name into a shared list to track execution order. */
     private class OrderTrackingMiddleware implements IHttpMiddleware {
         private final String name;
         private final List<String> log;

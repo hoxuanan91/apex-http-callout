@@ -2,30 +2,37 @@
  * @description Fluent HTTP callout builder with a composable middleware pipeline.
  *
  * Implements three design patterns:
- *  - Builder     : HttpCallout.Builder provides a fluent API for constructing requests
+ *  - Builder     : Stepped builder via HttpCallout.builder() for compile-time safety
  *  - Decorator   : Middleware are chained via IHttpMiddleware and executed in order
  *  - Strategy    : IResponseHandler decouples response processing from request building
  *
- * Supported methods: GET, HEAD, DELETE, POST, PUT, PATCH
+ * Body rules are enforced at COMPILE TIME by the return type of each verb:
  *
- * Body validation is enforced at build time:
- *  - GET / HEAD        → body forbidden
- *  - DELETE            → body optional
- *  - POST / PUT / PATCH → body required
+ *   Verb        Returns             body()   build()
+ *   ──────────  ──────────────────  ───────  ───────
+ *   get()       IBuildStep          ✗        ✓
+ *   head()      IBuildStep          ✗        ✓
+ *   delete_x()  IOptionalBodyStep   optional ✓
+ *   post()      IBodyRequiredStep   required ✗ (until body is set)
+ *   put()       IBodyRequiredStep   required ✗ (until body is set)
+ *   patch()     IBodyRequiredStep   required ✗ (until body is set)
+ *
+ * Entry point is HttpCallout.builder() — not new HttpCallout.Builder().
  *
  * @example
- * // Minimal GET
- * HttpCalloutResult result = new HttpCallout.Builder()
+ * // GET — build() available immediately
+ * HttpCalloutResult result = HttpCallout.builder()
  *     .endpoint('https://api.example.com/accounts')
  *     .get()
  *     .build()
  *     .execute();
  *
  * @example
- * // POST with full middleware pipeline
- * HttpCalloutResult result = new HttpCallout.Builder()
+ * // POST — build() only available after bodyJson() or body()
+ * HttpCalloutResult result = HttpCallout.builder()
  *     .endpoint('https://api.example.com/orders')
- *     .post(new Map<String, Object>{ 'ref' => '123' })
+ *     .post()                            // → IBodyRequiredStep (no build yet)
+ *     .bodyJson(new Map<String,Object>{'ref'=>'123'}) // → IBuildStep (build now available)
  *     .timeout(20000)
  *     .use(new CircuitBreakerMiddleware('OrderAPI'))
  *     .use(new BearerTokenMiddleware(myToken))
@@ -34,19 +41,16 @@
  *     .handleResponseWith(new JsonResponseHandler(OrderResponse.class))
  *     .build()
  *     .execute();
+ *
+ * @example
+ * // Compile error — post() without body
+ * HttpCallout.builder().endpoint('/api').post().build(); // ERROR: build() not on IBodyRequiredStep
+ *
+ * @example
+ * // Compile error — get() with body
+ * HttpCallout.builder().endpoint('/api').get().bodyJson(data); // ERROR: bodyJson() not on IBuildStep
  */
 public with sharing class HttpCallout {
-
-    // HTTP method configuration: bodyRequired, bodyAllowed
-    @TestVisible
-    private static final Map<String, MethodConfig> METHOD_CONFIGS = new Map<String, MethodConfig>{
-        'GET'    => new MethodConfig(false, false),
-        'HEAD'   => new MethodConfig(false, false),
-        'DELETE' => new MethodConfig(false, true),
-        'POST'   => new MethodConfig(true,  true),
-        'PUT'    => new MethodConfig(true,  true),
-        'PATCH'  => new MethodConfig(true,  true)
-    };
 
     private String endpoint;
     private String method = 'GET';
@@ -59,118 +63,150 @@ public with sharing class HttpCallout {
     private HttpCallout() {}
 
     // =========================================================================
-    // BUILDER
+    // FACTORY METHOD — only valid entry point
     // =========================================================================
 
-    public class Builder {
+    /** @return The first step of the stepped builder. */
+    public static IEndpointStep builder() {
+        return new Builder();
+    }
+
+    // =========================================================================
+    // STEPPED BUILDER INTERFACES
+    // =========================================================================
+
+    /** Step 1 — set the endpoint. */
+    public interface IEndpointStep {
+        IMethodStep endpoint(String url);
+    }
+
+    /** Step 2 — choose the HTTP verb. Return type determines what comes next. */
+    public interface IMethodStep {
+        IBuildStep        get();
+        IBuildStep        head();
+        IOptionalBodyStep delete_x();
+        IBodyRequiredStep post();
+        IBodyRequiredStep put();
+        IBodyRequiredStep patch();
+        // Verb + body shortcuts → go straight to IBuildStep
+        IBuildStep post(Object jsonBody);
+        IBuildStep put(Object jsonBody);
+        IBuildStep patch(Object jsonBody);
+    }
+
+    /**
+     * Step 3a — body is REQUIRED (POST / PUT / PATCH).
+     * build() is intentionally absent: you cannot build without providing a body.
+     */
+    public interface IBodyRequiredStep {
+        IBuildStep body(String rawBody);
+        IBuildStep bodyJson(Object obj);
+    }
+
+    /**
+     * Step 3b — body is OPTIONAL (DELETE).
+     * Extends IBuildStep so build() is available immediately,
+     * but body/bodyJson are also available if needed.
+     */
+    public interface IOptionalBodyStep extends IBuildStep {
+        IBuildStep body(String rawBody);
+        IBuildStep bodyJson(Object obj);
+    }
+
+    /**
+     * Step 4 — configure options and build.
+     * Returned by get()/head() directly, and by body()/bodyJson() on required/optional steps.
+     * Notably does NOT expose body() — prevents re-setting the body after the verb step.
+     */
+    public interface IBuildStep {
+        IBuildStep  timeout(Integer ms);
+        IBuildStep  header(String key, String value);
+        IBuildStep  contentTypeJson();
+        IBuildStep  use(IHttpMiddleware middleware);
+        IBuildStep  handleResponseWith(IResponseHandler handler);
+        HttpCallout build();
+    }
+
+    // =========================================================================
+    // BUILDER IMPLEMENTATION (private — access only via HttpCallout.builder())
+    // =========================================================================
+
+    private class Builder implements IEndpointStep, IMethodStep, IBodyRequiredStep, IOptionalBodyStep, IBuildStep {
+
         private final HttpCallout instance = new HttpCallout();
 
-        /** Sets the request endpoint (absolute URL or relative path). Required. */
-        public Builder endpoint(String url) {
+        // ----- IEndpointStep -----
+
+        public IMethodStep endpoint(String url) {
             instance.endpoint = url;
             return this;
         }
 
-        /**
-         * Sets the HTTP method. Throws HttpCalloutException for unsupported methods.
-         * Prefer the verb shortcuts (get(), post(), etc.) over this method.
-         */
-        public Builder method(String httpMethod) {
-            String upper = String.isNotBlank(httpMethod) ? httpMethod.toUpperCase() : '';
-            if (!METHOD_CONFIGS.containsKey(upper)) {
-                throw new HttpCalloutException('Unsupported HTTP method: ' + httpMethod);
-            }
-            instance.method = upper;
-            return this;
-        }
+        // ----- IMethodStep -----
 
-        // ----- Verb shortcuts -----
-        public Builder get()      { return method('GET'); }
-        public Builder head()     { return method('HEAD'); }
-        public Builder delete_x() { return method('DELETE'); }
-        public Builder post()     { return method('POST'); }
-        public Builder put()      { return method('PUT'); }
-        public Builder patch()    { return method('PATCH'); }
+        public IBuildStep        get()      { instance.method = 'GET';    return this; }
+        public IBuildStep        head()     { instance.method = 'HEAD';   return this; }
+        public IOptionalBodyStep delete_x() { instance.method = 'DELETE'; return this; }
+        public IBodyRequiredStep post()     { instance.method = 'POST';   return this; }
+        public IBodyRequiredStep put()      { instance.method = 'PUT';    return this; }
+        public IBodyRequiredStep patch()    { instance.method = 'PATCH';  return this; }
 
-        // ----- Verb + body shortcuts (enforces correct usage) -----
-        public Builder post(Object jsonBody)  { return method('POST').bodyJson(jsonBody); }
-        public Builder put(Object jsonBody)   { return method('PUT').bodyJson(jsonBody); }
-        public Builder patch(Object jsonBody) { return method('PATCH').bodyJson(jsonBody); }
+        public IBuildStep post(Object jsonBody)  { instance.method = 'POST';  return setJsonBody(jsonBody); }
+        public IBuildStep put(Object jsonBody)   { instance.method = 'PUT';   return setJsonBody(jsonBody); }
+        public IBuildStep patch(Object jsonBody) { instance.method = 'PATCH'; return setJsonBody(jsonBody); }
 
-        /** Sets the request timeout in milliseconds. Default: 30000 (30s). */
-        public Builder timeout(Integer ms) {
-            instance.timeout = ms;
-            return this;
-        }
+        // ----- IBodyRequiredStep + IOptionalBodyStep -----
 
-        /** Adds a single request header. */
-        public Builder header(String key, String value) {
-            instance.headers.put(key, value);
-            return this;
-        }
-
-        /** Shortcut to set Content-Type: application/json; charset=utf-8 */
-        public Builder contentTypeJson() {
-            return header('Content-Type', 'application/json; charset=utf-8');
-        }
-
-        /** Sets a raw string body. Does not set Content-Type automatically. */
-        public Builder body(String rawBody) {
+        public IBuildStep body(String rawBody) {
             instance.body = rawBody;
             return this;
         }
 
-        /**
-         * Serializes obj to JSON and sets Content-Type to application/json.
-         * Suppresses null fields (suppressApexObjectNulls = true).
-         */
-        public Builder bodyJson(Object obj) {
-            instance.body = JSON.serialize(obj, true);
-            return contentTypeJson();
+        public IBuildStep bodyJson(Object obj) {
+            return setJsonBody(obj);
         }
 
-        /**
-         * Adds a middleware to the pipeline. Middleware execute in the order they are added.
-         * Null middleware are silently ignored.
-         */
-        public Builder use(IHttpMiddleware middleware) {
+        // ----- IBuildStep -----
+
+        public IBuildStep timeout(Integer ms) {
+            instance.timeout = ms;
+            return this;
+        }
+
+        public IBuildStep header(String key, String value) {
+            instance.headers.put(key, value);
+            return this;
+        }
+
+        public IBuildStep contentTypeJson() {
+            return header('Content-Type', 'application/json; charset=utf-8');
+        }
+
+        public IBuildStep use(IHttpMiddleware middleware) {
             if (middleware != null) {
                 instance.middlewares.add(middleware);
             }
             return this;
         }
 
-        /** Sets a response handler (Strategy Pattern) for post-processing the HttpResponse. */
-        public Builder handleResponseWith(IResponseHandler handler) {
+        public IBuildStep handleResponseWith(IResponseHandler handler) {
             instance.responseHandler = handler;
             return this;
         }
 
-        /**
-         * Validates and returns the built HttpCallout instance.
-         *
-         * @throws HttpCalloutException if endpoint is blank, or if body rules are violated.
-         */
         public HttpCallout build() {
             if (String.isBlank(instance.endpoint)) {
                 throw new HttpCalloutException('Endpoint is required');
             }
-
-            MethodConfig config = METHOD_CONFIGS.get(instance.method);
-            Boolean hasBody = String.isNotBlank(instance.body);
-
-            if (config.bodyRequired && !hasBody) {
-                throw new HttpCalloutException(
-                    instance.method + ' request requires a body. Use .body() or .bodyJson()'
-                );
-            }
-            if (!config.bodyAllowed && hasBody) {
-                throw new HttpCalloutException(
-                    instance.method + ' request does not allow a body'
-                );
-            }
-
             return instance;
+        }
+
+        // ----- private helpers -----
+
+        private IBuildStep setJsonBody(Object obj) {
+            instance.body = JSON.serialize(obj, true);
+            instance.headers.put('Content-Type', 'application/json; charset=utf-8');
+            return this;
         }
     }
 
@@ -182,7 +218,7 @@ public with sharing class HttpCallout {
      * Executes the HTTP request through the middleware pipeline.
      *
      * @return HttpCalloutResult wrapping the response (and deserialized data if a handler was set)
-     * @throws HttpCalloutException propagated from middleware (e.g. circuit breaker, auth failure)
+     * @throws HttpCalloutException propagated from middleware (e.g. circuit breaker open)
      * @throws CalloutException if the HTTP callout itself fails
      */
     public HttpCalloutResult execute() {
@@ -242,17 +278,6 @@ public with sharing class HttpCallout {
     private class FinalMiddleware implements IHttpMiddleware {
         public HttpResponse handle(HttpRequest req, IHttpMiddleware next) {
             return new Http().send(req);
-        }
-    }
-
-    /** Describes body constraints for an HTTP method. */
-    public class MethodConfig {
-        public final Boolean bodyRequired;
-        public final Boolean bodyAllowed;
-
-        public MethodConfig(Boolean required, Boolean allowed) {
-            this.bodyRequired = required;
-            this.bodyAllowed = allowed;
         }
     }
 
