@@ -3,10 +3,10 @@
     {
       "path": "force-app",
       "package": "apex-http-callout",
-      "versionName": "v1.0.0",
-      "versionNumber": "1.0.0.NEXT",
+      "versionName": "v2.0.0",
+      "versionNumber": "2.0.0.NEXT",
       "default": true,
-      "versionDescription": "Initial release — fluent HTTP callout builder with middleware pipeline for Salesforce Apex"
+      "versionDescription": "Async support via executeAsync() — Queueable execution with IHttpCalloutCallback"
     }
   ],
   "name": "apex-http-callout",
@@ -15,6 +15,7 @@
   "sourceApiVersion": "66.0",
   "packageAliases": {
     "apex-http-callout": "0HoWU0000001v130AA",
-    "apex-http-callout@1.0.0-1": "04tWU000000QEfFYAW"
+    "apex-http-callout@1.0.0-1": "04tWU000000QEfFYAW",
+    "apex-http-callout@2.0.0-1": "04tWU000000QEwzYAG"
   }
 }

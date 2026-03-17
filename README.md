@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Salesforce API](https://img.shields.io/badge/Salesforce%20API-v66.0-blue)](https://developer.salesforce.com)
-[![Unlocked Package](https://img.shields.io/badge/Unlocked%20Package-v1.0.0-green)](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEfFYAW)
+[![Unlocked Package](https://img.shields.io/badge/Unlocked%20Package-v2.0.0-green)](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEwzYAG)
 
 A fluent, composable HTTP callout library for Salesforce Apex.
 
@@ -47,17 +47,18 @@ Install the latest version with a single command:
 
 ```bash
 sf package install \
-  --package 04tWU000000QEfFYAW \
+  --package 04tWU000000QEwzYAG \
   --target-org <your-org-alias> \
   --wait 10
 ```
 
 Or use the browser install link:
-[https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEfFYAW](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEfFYAW)
+[https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEwzYAG](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tWU000000QEwzYAG)
 
-| Version | Package ID | API |
-|---------|-----------|-----|
-| v1.0.0 | `04tWU000000QEfFYAW` | 66.0 |
+| Version | Package ID | API | What's new |
+|---------|-----------|-----|------------|
+| v2.0.0 | `04tWU000000QEwzYAG` | 66.0 | Async support — `executeAsync()` + `IHttpCalloutCallback` |
+| v1.0.0 | `04tWU000000QEfFYAW` | 66.0 | Initial release |
 
 ### Option 2 — Manual deploy
 
@@ -542,53 +543,60 @@ if (result.isSuccess()) {
 
 ---
 
-## Async usage — Queueable and Finalizer
+## Async usage
 
-The library works in asynchronous Apex contexts. The class implementing `Queueable` must also implement `Database.AllowsCallouts` — this interface is required by Salesforce for any callout made from an async job.
+As of v2.0.0, the library includes native async support via `executeAsync()` and `IHttpCalloutCallback`.
 
-### Queueable — fire and forget
+### `executeAsync()` — built-in async execution
 
-Offloads the callout from the main transaction. The caller does not wait for the HTTP response.
+Replaces the manual Queueable boilerplate. The callout runs in a separate Apex transaction via `HttpCalloutQueueable`, which implements `Queueable` and `Database.AllowsCallouts` internally.
 
 ```apex
-public class HttpCalloutJob implements Queueable, Database.AllowsCallouts {
-
-    private final String endpoint;
-    private final Map<String, Object> body;
-
-    public HttpCalloutJob(String endpoint, Map<String, Object> body) {
-        this.endpoint = endpoint;
-        this.body     = body;
-    }
-
-    public void execute(QueueableContext ctx) {
-        HttpCalloutResult result = HttpCallout.builder()
-            .endpoint(endpoint)
-            .post(body)
-            .use(new CircuitBreakerMiddleware('OrderAPI', 3, 60))
-            .use(new RetryMiddleware(2))
-            .use(new LoggingMiddleware())
-            .build()
-            .execute();
-
-        if (!result.isSuccess()) {
-            // handle failure
+// Implement the callback to handle the result
+public class OrderCallback implements IHttpCalloutCallback {
+    public void onSuccess(HttpCalloutResult result) {
+        if (result.isSuccess()) {
+            // process result — update records, publish events, etc.
+        } else if (result.isServerError()) {
+            System.debug('Server error: ' + result.statusCode);
         }
+    }
+    public void onFailure(Exception ex) {
+        // callout threw — circuit breaker open, network error, etc.
+        System.debug('Callout failed: ' + ex.getMessage());
     }
 }
 
-// enqueue from anywhere in your code
-System.enqueueJob(new HttpCalloutJob('https://api.example.com/orders', payload));
+// Fire and forget — returns the Queueable job Id
+Id jobId = HttpCallout.builder()
+    .endpoint('https://api.example.com/orders')
+    .post(new Map<String, Object>{ 'ref' => 'ORD-001' })
+    .use(new CircuitBreakerMiddleware('OrderAPI', 3, 60))
+    .use(new RetryMiddleware(2))
+    .use(new LoggingMiddleware())
+    .handleResponseWith(new JsonResponseHandler(OrderResponse.class))
+    .build()
+    .executeAsync(new OrderCallback());
 ```
 
-**What you gain:**
+**How `onSuccess` vs `onFailure` are triggered:**
+
+| Scenario | Callback called |
+|----------|----------------|
+| HTTP response received (any status code) | `onSuccess` — check `result.isSuccess()` |
+| `CalloutException` (network error, timeout) | `onFailure` |
+| Circuit breaker OPEN | `onFailure` |
+| Any unhandled middleware exception | `onFailure` |
+
+> A 4xx or 5xx HTTP response calls `onSuccess` — it is a valid HTTP response. Use `result.isClientError()` / `result.isServerError()` to handle error status codes in your callback.
+
+**What you gain over synchronous `execute()`:**
 - Main transaction does not wait for the callout to complete
-- Separate governor limits from the calling transaction
-- Can chain jobs for real retry delays (not CPU busy-wait)
+- Separate governor limits (callout limit, CPU time) from the calling transaction
 
 ### Chained Queueable — real retry delay
 
-Replaces `RetryMiddleware`'s CPU busy-wait with actual time between attempts. Each chained job runs in a separate transaction, giving a genuine delay:
+For real delays between retries (not CPU busy-wait), chain Queueable jobs. Each job runs in a new transaction giving a genuine separation in time:
 
 ```apex
 public class HttpCalloutWithRetryJob implements Queueable, Database.AllowsCallouts {
@@ -609,7 +617,6 @@ public class HttpCalloutWithRetryJob implements Queueable, Database.AllowsCallou
             .execute();
 
         if (!result.isSuccess() && attemptsLeft > 0) {
-            // enqueue next attempt — runs in a new transaction after Salesforce schedules it
             System.enqueueJob(new HttpCalloutWithRetryJob(endpoint, attemptsLeft - 1));
         }
     }
@@ -623,25 +630,23 @@ System.enqueueJob(new HttpCalloutWithRetryJob('https://api.example.com/orders', 
 A `Finalizer` runs after the Queueable job completes regardless of outcome — success, unhandled exception, or governor limit breach. Finalizers **cannot make callouts** themselves, but can enqueue a new job:
 
 ```apex
-public class HttpCalloutFinalizer implements Finalizer {
-
-    private final String endpoint;
-
-    public HttpCalloutFinalizer(String endpoint) {
-        this.endpoint = endpoint;
-    }
-
+public class OrderFinalizer implements Finalizer {
     public void execute(FinalizerContext ctx) {
         if (ctx.getResult() == ParentJobResult.UNHANDLED_EXCEPTION) {
             System.debug('Job failed: ' + ctx.getException().getMessage());
-            System.enqueueJob(new HttpCalloutJob(endpoint, null));  // re-enqueue for retry
+            // re-enqueue for retry
+            HttpCallout.builder()
+                .endpoint('https://api.example.com/orders')
+                .get()
+                .build()
+                .executeAsync(new OrderCallback());
         }
     }
 }
 
-public class HttpCalloutJob implements Queueable, Database.AllowsCallouts {
+public class OrderJobWithFinalizer implements Queueable, Database.AllowsCallouts {
     public void execute(QueueableContext ctx) {
-        System.attachFinalizer(new HttpCalloutFinalizer('https://api.example.com/orders'));
+        System.attachFinalizer(new OrderFinalizer());
 
         HttpCallout.builder()
             .endpoint('https://api.example.com/orders')
@@ -655,13 +660,14 @@ public class HttpCalloutJob implements Queueable, Database.AllowsCallouts {
 
 **Comparison:**
 
-| | Queueable | Chained Queueable | Finalizer |
+| | `executeAsync()` | Chained Queueable | Finalizer |
 |---|---|---|---|
 | Make callouts | Yes | Yes | **No** |
 | Real retry delay | No | Yes | No — but can enqueue |
-| Handles unhandled exceptions | No | No | **Yes** |
+| Handles unhandled exceptions | Via `onFailure` | No | **Yes** |
+| Boilerplate required | None | Custom class | Custom class |
 
-> **Circuit breaker in async:** each Queueable job runs in a separate transaction, so circuit breaker state resets between jobs. For persistent state across async jobs, back it with **Platform Cache** or a **Custom Object**.
+> **Circuit breaker in async:** each Queueable job runs in a separate Apex transaction, so circuit breaker state resets between jobs. For persistent state across transactions, back it with **Platform Cache** or a **Custom Object**.
 
 ---
 
@@ -720,6 +726,8 @@ force-app/main/default/classes/
 ├── ApiKeyMiddleware.cls             # API key auth (header or query param)
 ├── BearerTokenMiddleware.cls        # Bearer token auth (RFC 6750)
 ├── JsonResponseHandler.cls          # JSON deserialization handler
+├── IHttpCalloutCallback.cls         # Async callback interface
+├── HttpCalloutQueueable.cls         # Queueable wrapper for async execution
 └── HttpCalloutMockFactory.cls       # Test utilities (@IsTest)
 ```
 

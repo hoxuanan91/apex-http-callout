@@ -215,6 +215,19 @@ public with sharing class HttpCallout {
     // =========================================================================
 
     /**
+     * Executes the HTTP request asynchronously via a Queueable job.
+     *
+     * The callout runs in a separate Apex transaction with its own governor limits.
+     * The result is delivered to the provided callback via onSuccess or onFailure.
+     *
+     * @param callback  Receives the result — may be null if no callback is needed
+     * @return          The Queueable job Id
+     */
+    public Id executeAsync(IHttpCalloutCallback callback) {
+        return System.enqueueJob(new HttpCalloutQueueable(this, callback));
+    }
+
+    /**
      * Executes the HTTP request through the middleware pipeline.
      *
      * @return HttpCalloutResult wrapping the response (and deserialized data if a handler was set)
